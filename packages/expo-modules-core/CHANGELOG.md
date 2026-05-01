@@ -58,6 +58,7 @@ _This version does not introduce any user-facing changes._
 
 ### 💡 Others
 
+- [iOS] Enabled `NonisolatedNonsendingByDefault` and `InferIsolatedConformances` upcoming Swift features. ([#45293](https://github.com/expo/expo/pull/45293) by [@tsapeta](https://github.com/tsapeta))
 - [iOS] Reduced per-call overhead of invoking native functions from JavaScript. ([#45093](https://github.com/expo/expo/pull/45093) by [@tsapeta](https://github.com/tsapeta))
 - [iOS] Fixed precompile build failing on `SwiftUIVirtualViewSharedImpl+Private.h` leaking into the public module umbrella. ([#44993](https://github.com/expo/expo/pull/44993) by [@chrfalch](https://github.com/chrfalch))
 - [iOS] Added explicit c++ linkage specifier to `ExpoModulesCore.podspec` to propagate to swift-only targets like Expo Widgets ([#44984](https://github.com/expo/expo/pull/44984) by [@chrfalch](https://github.com/chrfalch))
