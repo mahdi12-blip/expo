@@ -33,6 +33,17 @@ open class JavaScriptRuntime: Equatable, @unchecked Sendable {
   internal let scheduler: expo.RuntimeScheduler
 
   /**
+   Thread ID of the JavaScript thread, captured at construction time. Used by `isOnJavaScriptThread()`
+   for a fast integer comparison instead of `Thread.current.name == "..."`.
+   Assumes runtime initializers always run on the JS thread.
+   */
+  private let jsThreadID: UInt64 = {
+    var id: UInt64 = 0
+    pthread_threadid_np(nil, &id)
+    return id
+  }()
+
+  /**
    Actor for running runtime work.
    */
   lazy var runtimeActor: JavaScriptRuntimeActor = JavaScriptRuntimeActor(runtime: self)
@@ -319,7 +330,7 @@ open class JavaScriptRuntime: Equatable, @unchecked Sendable {
       let argumentsRef = arguments.copy().ref()
 
       // Switch to asynchronous context.
-      self.schedule(taskName: "[JS] Async function \(name)") {
+      self.schedule {
         // Invoke the asynchronous function and resolve/reject the promise.
         do {
           let result = try await function(this, argumentsRef.take())
@@ -356,11 +367,10 @@ open class JavaScriptRuntime: Equatable, @unchecked Sendable {
 
   public func schedule(
     priority: SchedulerPriority = .normal,
-    taskName: String? = "[JS] runtime.schedule (\(#function))",
     @_implicitSelfCapture _ closure: @escaping @JavaScriptActor () async throws -> Void
   ) -> Void {
     schedule(priority: priority) {
-      Task.immediate_polyfill(name: taskName) {
+      Task.immediate_polyfill {
         try await closure()
       }
     }
@@ -371,8 +381,14 @@ open class JavaScriptRuntime: Equatable, @unchecked Sendable {
    Not available in async contexts to prevent blocking the cooperative thread pool.
    */
   @available(*, noasync)
+  @discardableResult
   public func execute<R: Sendable>(@_implicitSelfCapture _ closure: @escaping @JavaScriptActor () throws -> R) throws -> sending R {
+    if isOnJavaScriptThread() {
+      return try JavaScriptActor.assumeIsolated(closure)
+    }
+
     var result: Result<R, any Error>!
+    nonisolated(unsafe) let callerRunLoop = CFRunLoopGetCurrent()
 
     scheduler.scheduleTask(.ImmediatePriority) {
       do {
@@ -380,12 +396,18 @@ open class JavaScriptRuntime: Equatable, @unchecked Sendable {
       } catch {
         result = .failure(error)
       }
+      // Wake the caller's run loop so its `RunLoop.run(...)` returns immediately
+      // instead of waiting out the timeout backstop.
+      CFRunLoopPerformBlock(callerRunLoop, CFRunLoopMode.commonModes.rawValue) {}
+      CFRunLoopWakeUp(callerRunLoop)
     }
 
     // Use RunLoop to wait for the task to finish. As opposed to DispatchSemaphore or DispatchGroup,
     // this solution lets the current run loop to process other events in the meantime.
+    // The 100ms timeout is a backstop in case the wakeup is missed; the common path is woken
+    // by `CFRunLoopWakeUp` from the scheduled block above.
     while result == nil {
-      RunLoop.current.run(mode: .common, before: Date().addingTimeInterval(0.001))
+      RunLoop.current.run(mode: .common, before: Date().addingTimeInterval(0.1))
     }
     return try result.get()
   }
@@ -395,26 +417,39 @@ open class JavaScriptRuntime: Equatable, @unchecked Sendable {
    Not available in async contexts to prevent blocking the cooperative thread pool.
    */
   @available(*, noasync)
+  @discardableResult
   public func execute<R: Sendable>(
-    taskName: String? = "[JS] runtime.execute (\(#function))",
     @_implicitSelfCapture _ closure: @escaping @JavaScriptActor () async throws -> R
   ) throws -> sending R {
     let result = NonisolatedUnsafeVar<Result<R, any Error>>()
+    let runInline = isOnJavaScriptThread()
+    nonisolated(unsafe) let callerRunLoop = CFRunLoopGetCurrent()
 
-    scheduler.scheduleTask(.ImmediatePriority) {
-      Task.immediate_polyfill(name: taskName, priority: .high) {
+    let body = { () -> Void in
+      Task.immediate_polyfill(priority: .high) {
         do {
           result.value = .success(try await closure())
         } catch {
           result.value = .failure(error)
         }
+        // Wake the caller's run loop so its `RunLoop.run(...)` returns immediately
+        // instead of waiting out the timeout backstop.
+        CFRunLoopPerformBlock(callerRunLoop, CFRunLoopMode.commonModes.rawValue) {}
+        CFRunLoopWakeUp(callerRunLoop)
       }
+    }
+    if runInline {
+      body()
+    } else {
+      scheduler.scheduleTask(.ImmediatePriority, body)
     }
 
     // Use RunLoop to wait for the task to finish. As opposed to DispatchSemaphore or DispatchGroup,
     // this solution lets the current run loop to process other events in the meantime.
+    // The 100ms timeout is a backstop in case the wakeup is missed; the common path is woken
+    // by `CFRunLoopWakeUp` from the Task above.
     while result.value == nil {
-      RunLoop.current.run(mode: .common, before: Date().addingTimeInterval(0.001))
+      RunLoop.current.run(mode: .common, before: Date().addingTimeInterval(0.1))
     }
     return try result.value.get()
   }
@@ -422,9 +457,13 @@ open class JavaScriptRuntime: Equatable, @unchecked Sendable {
   /**
    Asynchronously executes a sync closure on the JavaScript runtime thread, awaiting its completion without blocking.
    */
+  @discardableResult
   public func execute<R: Sendable>(
     @_implicitSelfCapture _ closure: @escaping @JavaScriptActor () throws -> R
   ) async throws -> sending R {
+    if isOnJavaScriptThread() {
+      return try JavaScriptActor.assumeIsolated(closure)
+    }
     return try await withUnsafeThrowingContinuation { continuation in
       scheduler.scheduleTask(.ImmediatePriority) {
         do {
@@ -439,13 +478,16 @@ open class JavaScriptRuntime: Equatable, @unchecked Sendable {
   /**
    Asynchronously executes an async closure on the JavaScript runtime thread, awaiting its completion without blocking.
    */
+  @discardableResult
   public func execute<R: Sendable>(
-    taskName: String? = "[JS] runtime.execute (async \(#function))",
     @_implicitSelfCapture _ closure: @escaping @JavaScriptActor () async throws -> R
   ) async throws -> sending R {
+    if isOnJavaScriptThread() {
+      return try await Task.immediate_polyfill(priority: .high, operation: closure).value
+    }
     return try await withUnsafeThrowingContinuation { continuation in
       scheduler.scheduleTask(.ImmediatePriority) {
-        Task.immediate_polyfill(name: taskName, priority: .high) { @JavaScriptActor in
+        Task.immediate_polyfill(priority: .high) { @JavaScriptActor in
           do {
             continuation.resume(returning: try await closure())
           } catch {
@@ -459,14 +501,18 @@ open class JavaScriptRuntime: Equatable, @unchecked Sendable {
   /**
    Checks whether the function is called on the JavaScript thread.
    */
-  public func isOnJavaScriptThread() -> Bool {
-    return Thread.current.name == "com.facebook.react.runtime.JavaScript"
+  @inline(__always)
+  public final func isOnJavaScriptThread() -> Bool {
+    var current: UInt64 = 0
+    pthread_threadid_np(nil, &current)
+    return current == jsThreadID
   }
 
   /**
    Asserts whether we are on the JavaScript thread. Helpful for debugging threading issues.
    */
-  public func assertThread(file: String = #file, function: String = #function, line: Int = #line) {
+  @inline(__always)
+  public final func assertThread(file: String = #file, function: String = #function, line: Int = #line) {
     assert(isOnJavaScriptThread(), "Function '\(function)' is not run on the JavaScript thread (\(file):\(line))")
   }
 
