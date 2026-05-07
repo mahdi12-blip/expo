@@ -159,7 +159,7 @@ public final class BenchmarkingExpoModule: Module {
       let runtime = try self.appContext!.runtime
       let start = DispatchTime.now()
       for _ in 0..<iterations {
-        try runtime.execute { @JavaScriptActor in
+        try runtime.execute { @JavaScriptActor () async in
           return runtime.global().hasProperty("Math")
         }
       }
@@ -195,7 +195,7 @@ public final class BenchmarkingExpoModule: Module {
         do {
           let start = DispatchTime.now()
           for _ in 0..<iterations {
-            try await runtime.execute { @JavaScriptActor in
+            try await runtime.execute { @JavaScriptActor () async in
               return runtime.global().hasProperty("Math")
             }
           }
