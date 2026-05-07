@@ -26,6 +26,14 @@ export const UIScreens = [
       return optionalRequire(() => require('./CommunitySegmentedControlScreen'));
     },
   },
+  {
+    name: 'Community MaskedView replacement',
+    route: 'ui/community-masked-view',
+    options: {},
+    getComponent() {
+      return optionalRequire(() => require('./CommunityMaskedViewScreen'));
+    },
+  },
 ];
 
 export default function UIScreen() {
