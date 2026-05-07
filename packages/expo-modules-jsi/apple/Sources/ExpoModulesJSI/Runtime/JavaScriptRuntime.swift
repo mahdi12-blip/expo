@@ -396,18 +396,23 @@ open class JavaScriptRuntime: Equatable, @unchecked Sendable {
       } catch {
         result = .failure(error)
       }
-      // Wake the caller's run loop so its `RunLoop.run(...)` returns immediately
+      // Wake the caller's run loop so its `CFRunLoopRunInMode(...)` returns immediately
       // instead of waiting out the timeout backstop.
       CFRunLoopPerformBlock(callerRunLoop, CFRunLoopMode.commonModes.rawValue) {}
       CFRunLoopWakeUp(callerRunLoop)
     }
 
-    // Use RunLoop to wait for the task to finish. As opposed to DispatchSemaphore or DispatchGroup,
-    // this solution lets the current run loop to process other events in the meantime.
-    // The 100ms timeout is a backstop in case the wakeup is missed; the common path is woken
-    // by `CFRunLoopWakeUp` from the scheduled block above.
+    // Pump the caller's run loop until the task finishes. As opposed to DispatchSemaphore
+    // or DispatchGroup, this lets the run loop continue to process other events in the meantime,
+    // and the spin is also faster than a real kernel-mediated context switch when the JS work
+    // is short (the common case). The 100ms timeout is a backstop in case the wakeup is missed;
+    // the common path is woken by `CFRunLoopWakeUp` from the scheduled block above.
+    //
+    // `CFRunLoopRunInMode` is the C API rather than `RunLoop.current.run(mode:before:)` to
+    // avoid the per-iteration `+[NSRunLoop currentRunLoop]` autorelease push and `Date()`
+    // allocation that dominated the caller-thread profile otherwise.
     while result == nil {
-      RunLoop.current.run(mode: .common, before: Date().addingTimeInterval(0.1))
+      CFRunLoopRunInMode(.commonModes, 0.1, false)
     }
     return try result.get()
   }
@@ -432,7 +437,7 @@ open class JavaScriptRuntime: Equatable, @unchecked Sendable {
         } catch {
           result.value = .failure(error)
         }
-        // Wake the caller's run loop so its `RunLoop.run(...)` returns immediately
+        // Wake the caller's run loop so its `CFRunLoopRunInMode(...)` returns immediately
         // instead of waiting out the timeout backstop.
         CFRunLoopPerformBlock(callerRunLoop, CFRunLoopMode.commonModes.rawValue) {}
         CFRunLoopWakeUp(callerRunLoop)
@@ -444,12 +449,11 @@ open class JavaScriptRuntime: Equatable, @unchecked Sendable {
       scheduler.scheduleTask(.ImmediatePriority, body)
     }
 
-    // Use RunLoop to wait for the task to finish. As opposed to DispatchSemaphore or DispatchGroup,
-    // this solution lets the current run loop to process other events in the meantime.
-    // The 100ms timeout is a backstop in case the wakeup is missed; the common path is woken
-    // by `CFRunLoopWakeUp` from the Task above.
+    // Pump the caller's run loop until the task finishes. See the sync overload above for
+    // the rationale on `CFRunLoopRunInMode` vs. `RunLoop.current.run(...)` and on pumping
+    // the run loop instead of blocking on a semaphore.
     while result.value == nil {
-      RunLoop.current.run(mode: .common, before: Date().addingTimeInterval(0.1))
+      CFRunLoopRunInMode(.commonModes, 0.1, false)
     }
     return try result.value.get()
   }
