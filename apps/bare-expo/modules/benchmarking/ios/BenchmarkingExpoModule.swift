@@ -147,8 +147,8 @@ public final class BenchmarkingExpoModule: Module {
       let runtime = try self.appContext!.runtime
       let start = DispatchTime.now()
       for _ in 0..<iterations {
-        try runtime.execute {
-          return runtime.global().hasProperty("Math")
+        try runtime.execute { () -> Void in
+          _ = runtime.global().hasProperty("Math")
         }
       }
       return Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
@@ -159,8 +159,8 @@ public final class BenchmarkingExpoModule: Module {
       let runtime = try self.appContext!.runtime
       let start = DispatchTime.now()
       for _ in 0..<iterations {
-        try runtime.execute { @JavaScriptActor () async in
-          return runtime.global().hasProperty("Math")
+        try runtime.execute { @JavaScriptActor () async -> Void in
+          _ = runtime.global().hasProperty("Math")
         }
       }
       return Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
@@ -176,8 +176,8 @@ public final class BenchmarkingExpoModule: Module {
         do {
           let start = DispatchTime.now()
           for _ in 0..<iterations {
-            try await runtime.execute {
-              return runtime.global().hasProperty("Math")
+            try await runtime.execute { () -> Void in
+              _ = runtime.global().hasProperty("Math")
             }
           }
           let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
@@ -195,8 +195,8 @@ public final class BenchmarkingExpoModule: Module {
         do {
           let start = DispatchTime.now()
           for _ in 0..<iterations {
-            try await runtime.execute { @JavaScriptActor () async in
-              return runtime.global().hasProperty("Math")
+            try await runtime.execute { @JavaScriptActor () async -> Void in
+              _ = runtime.global().hasProperty("Math")
             }
           }
           let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
